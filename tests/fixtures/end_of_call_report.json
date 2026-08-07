@@ -1,0 +1,27 @@
+{
+  "message": {
+    "type": "end-of-call-report",
+    "endedReason": "customer-ended-call",
+    "call": {
+      "id": "call_test_12345",
+      "assistantId": "assistant_tenant_a",
+      "phoneNumberId": "phone_tenant_a",
+      "customer": { "number": "+48600100200" },
+      "status": "ended",
+      "createdAt": "2026-08-07T10:00:00.000Z",
+      "updatedAt": "2026-08-07T10:05:00.000Z"
+    },
+    "artifact": {
+      "transcript": "AI: Dzien dobry, kancelaria notarialna, w czym moge pomoc?\nCustomer: Chcialbym umowic sie na sporzadzenie aktu notarialnego.",
+      "messages": [
+        { "role": "assistant", "message": "Dzien dobry, kancelaria notarialna, w czym moge pomoc?" },
+        { "role": "user", "message": "Chcialbym umowic sie na sporzadzenie aktu notarialnego." }
+      ],
+      "recording": { "stereoUrl": "https://storage.vapi.ai/recording_test_12345.wav" }
+    },
+    "analysis": {
+      "summary": "Klient chce umowic wizyte w celu sporzadzenia aktu notarialnego.",
+      "structuredData": {}
+    }
+  }
+}
