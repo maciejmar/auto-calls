@@ -40,6 +40,35 @@ class VapiAnalysis(BaseModel):
     structuredData: dict | None = None
 
 
+class VapiToolCallFunction(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    name: str
+    arguments: dict = {}
+
+
+class VapiToolCall(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    id: str
+    # Some Vapi API versions nest name/arguments under `function`, others put
+    # them directly on the tool call — accept both so a doc/version drift
+    # doesn't silently break tool dispatch.
+    function: VapiToolCallFunction | None = None
+    name: str | None = None
+    arguments: dict | None = None
+
+    @property
+    def tool_name(self) -> str:
+        return (self.function.name if self.function else self.name) or ""
+
+    @property
+    def tool_arguments(self) -> dict:
+        if self.function:
+            return self.function.arguments
+        return self.arguments or {}
+
+
 class VapiMessage(BaseModel):
     model_config = ConfigDict(extra="allow")
 
@@ -48,6 +77,7 @@ class VapiMessage(BaseModel):
     call: VapiCall
     artifact: VapiArtifact | None = None
     analysis: VapiAnalysis | None = None
+    toolCallList: list[VapiToolCall] | None = None
 
 
 class VapiWebhookPayload(BaseModel):

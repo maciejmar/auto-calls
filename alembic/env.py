@@ -9,7 +9,7 @@ from alembic import context
 
 from app.config import get_settings
 from app.db.base import Base
-from app.models import call, enquiry, tenant  # noqa: F401 - ensures models are registered
+from app.models import appointment, call, enquiry, tenant  # noqa: F401 - ensures models are registered
 
 config = context.config
 

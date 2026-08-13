@@ -19,6 +19,8 @@ class Settings(BaseSettings):
     openai_api_key: str = ""
     openai_model: str = "gpt-4o-mini"
 
+    google_service_account_file: str = ""
+
 
 @lru_cache
 def get_settings() -> Settings:

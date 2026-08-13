@@ -8,7 +8,7 @@ from app.db import session as db_session_module
 from app.db.base import Base
 from app.db.session import get_db
 from app.main import app
-from app.models import call, enquiry, tenant  # noqa: F401 - register models on Base.metadata
+from app.models import appointment, call, enquiry, tenant  # noqa: F401 - register models on Base.metadata
 
 
 @pytest.fixture(autouse=True)
