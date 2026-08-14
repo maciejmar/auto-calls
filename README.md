@@ -363,14 +363,16 @@ z internetu jest Caddy na 80/443.
    cp .env.example .env   # uzupełnij realnymi wartościami
    mkdir secrets
    # wgraj tu google-service-account.json, np. przez scp z Twojego komputera:
-   #   scp secrets/google-service-account.json <user>@95.158.64.196:/opt/auto-calls/secrets/
+   #   scp -P 2222 secrets/google-service-account.json <user>@95.158.64.196:/opt/auto-calls/secrets/
    ```
 5. **Klucz SSH dla GitHub Actions** — wygenerowany lokalnie
    (`ssh-keygen -t ed25519`, para w scratchpadzie tej sesji). Dodaj **klucz
    publiczny** do `~/.ssh/authorized_keys` użytkownika, na którego będzie
    logował się deploy, na serwerze `95.158.64.196`.
-6. **Firewall**: otwórz tylko 80, 443 i port SSH; upewnij się, że 8000 i
-   5432 nie są dostępne z zewnątrz (w `docker-compose.prod.yml` i tak nie są
+6. **SSH i firewall**: serwer nasłuchuje SSH na **porcie 2222** (nie 22 —
+   workflow ma to już zaszyte w `.github/workflows/deploy.yml`). Otwórz w
+   firewallu tylko 80, 443 i 2222; upewnij się, że 8000 i 5432 nie są
+   dostępne z zewnątrz (w `docker-compose.prod.yml` i tak nie są
    publikowane, firewall to dodatkowa warstwa).
 7. **Sekrety w GitHub** (Settings → Secrets and variables → Actions →
    *New repository secret*) w repo `maciejmar/auto-calls`:
@@ -378,6 +380,7 @@ z internetu jest Caddy na 80/443.
    - `SSH_USER` = użytkownik z kroku 5
    - `SSH_PRIVATE_KEY` = zawartość **prywatnego** klucza z kroku 5 (plik bez
      rozszerzenia `.pub`) — nigdy nie wklejaj go nigdzie indziej.
+   - Port (2222) nie jest sekretem, jest już wpisany wprost w workflow.
 8. **Pierwsze uruchomienie** (ręcznie, na serwerze, żeby nie czekać na
    pierwszy push):
    ```bash
