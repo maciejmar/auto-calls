@@ -1,0 +1,58 @@
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: auto_calls
+      POSTGRES_PASSWORD: auto_calls
+      POSTGRES_DB: auto_calls
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U auto_calls -d auto_calls"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    # No host port published: only reachable from other containers on this
+    # compose network, never from the public internet.
+
+  app:
+    build: .
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://auto_calls:auto_calls@db:5432/auto_calls
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - ./secrets:/srv/app/secrets:ro
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    # No host port published: reached only through the caddy reverse proxy.
+    # Unlike docker-compose.yml (dev), no ./app or ./alembic bind mounts —
+    # the running code is exactly what was baked into the image at build
+    # time from the current commit, nothing else.
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - app
+
+volumes:
+  db_data:
+  caddy_data:
+  caddy_config:
