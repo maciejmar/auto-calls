@@ -19,7 +19,6 @@ def webhook_secret(monkeypatch):
     get_settings.cache_clear()
 
 
-
 @pytest_asyncio.fixture
 async def db_engine():
     # StaticPool keeps every session on the same underlying connection, so
