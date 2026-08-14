@@ -352,59 +352,64 @@ z internetu jest Caddy na 80/443.
    certyfikatu przez Caddy; pomarańczowe proxy Cloudflare da się dołączyć
    później.
 2. **Docker na serwerze**: zainstaluj Docker Engine + plugin Compose
-   (`docker compose version` powinno działać).
-3. **Katalog i repo**:
-   ```bash
-   mkdir -p /opt/auto-calls && cd /opt/auto-calls
-   git clone https://github.com/maciejmar/auto-calls.git .
-   ```
-4. **Sekrety na serwerze** (nigdy przez Git/CI):
-   ```bash
-   cp .env.example .env   # uzupełnij realnymi wartościami
-   mkdir secrets
-   # wgraj tu google-service-account.json, np. przez scp z Twojego komputera:
-   #   scp -P 2222 secrets/google-service-account.json <user>@95.158.64.196:/opt/auto-calls/secrets/
-   ```
-5. **Klucz SSH dla GitHub Actions** — wygenerowany lokalnie
-   (`ssh-keygen -t ed25519`, para w scratchpadzie tej sesji). Dodaj **klucz
-   publiczny** do `~/.ssh/authorized_keys` użytkownika, na którego będzie
-   logował się deploy, na serwerze `95.158.64.196`.
-6. **SSH i firewall**: serwer nasłuchuje SSH na **porcie 2222** (nie 22 —
+   (`docker compose version` powinno działać), i dodaj usera `webaby` do
+   grupy `docker` (`sudo usermod -aG docker webaby`, potem relogin), żeby
+   `docker compose` działało bez `sudo` — workflow łączy się zwykłym userem,
+   bez podnoszonych uprawnień.
+3. **Klucz SSH dla GitHub Actions** — wygenerowany lokalnie
+   (`ssh-keygen -t ed25519`). Dodaj **klucz publiczny** do
+   `~/.ssh/authorized_keys` usera `webaby` na serwerze `95.158.64.196`.
+4. **SSH i firewall**: serwer nasłuchuje SSH na **porcie 2222** (nie 22 —
    workflow ma to już zaszyte w `.github/workflows/deploy.yml`). Otwórz w
    firewallu tylko 80, 443 i 2222; upewnij się, że 8000 i 5432 nie są
    dostępne z zewnątrz (w `docker-compose.prod.yml` i tak nie są
    publikowane, firewall to dodatkowa warstwa).
-7. **Sekrety w GitHub** (Settings → Secrets and variables → Actions →
+5. **Sekrety w GitHub** (Settings → Secrets and variables → Actions →
    *New repository secret*) w repo `maciejmar/auto-calls`:
    - `SSH_HOST` = `95.158.64.196`
-   - `SSH_USER` = użytkownik z kroku 5
-   - `SSH_PRIVATE_KEY` = zawartość **prywatnego** klucza z kroku 5 (plik bez
+   - `SSH_USER` = `webaby`
+   - `SSH_PRIVATE_KEY` = zawartość **prywatnego** klucza z kroku 3 (plik bez
      rozszerzenia `.pub`) — nigdy nie wklejaj go nigdzie indziej.
    - Port (2222) nie jest sekretem, jest już wpisany wprost w workflow.
-8. **Pierwsze uruchomienie** (ręcznie, na serwerze, żeby nie czekać na
-   pierwszy push):
+6. **Repo i sekrety na serwerze** — `git clone`/`git pull` robi już za Ciebie
+   workflow (patrz niżej), więc katalog `~/auto-calls` powstanie sam przy
+   pierwszym pushu. Ale `.env` i `secrets/google-service-account.json`
+   zawierają Twoje prywatne klucze, których nigdy nie ma w repo — te dwie
+   rzeczy musisz wgrać ręcznie, raz, **po** pierwszym uruchomieniu workflow
+   (żeby katalog już istniał):
    ```bash
-   cd /opt/auto-calls
-   docker compose -f docker-compose.prod.yml up -d --build
-   docker compose -f docker-compose.prod.yml exec -T app alembic upgrade head
+   # na serwerze, po pierwszym (nieudanym, bo bez .env) przebiegu workflow
+   cd ~/auto-calls
+   cp .env.example .env
+   nano .env   # uzupełnij OPENAI_API_KEY, VAPI_API_KEY, VAPI_WEBHOOK_SECRET
+   mkdir -p secrets
    ```
-   Sprawdź `curl https://ai-call.webaby.io/health` — Caddy powinien mieć już
-   ważny certyfikat.
+   ```bash
+   # z Twojego komputera:
+   scp -P 2222 secrets/google-service-account.json webaby@95.158.64.196:~/auto-calls/secrets/
+   ```
+   Potem popchnij dowolny commit (albo ręcznie uruchom
+   `bash scripts/deploy.sh` na serwerze w `~/auto-calls`), żeby kontener
+   wystartował już z uzupełnionymi sekretami.
 
 ### Jak działa automatyczny deploy
 
 `.github/workflows/deploy.yml`: push na `master` → job `test` (pytest, bez
 zależności od Postgresa — testy używają SQLite w pamięci) → dopiero po
-zielonych testach job `deploy` łączy się SSH i uruchamia
-`scripts/deploy.sh` w `/opt/auto-calls` na serwerze (`git pull` → rebuild →
-restart → `alembic upgrade head`). Status widać w zakładce **Actions** w
-GitHubie.
+zielonych testach job `deploy` łączy się SSH; jeśli `~/auto-calls` jeszcze
+nie istnieje na serwerze, klonuje repo, w przeciwnym razie leci prosto do
+`scripts/deploy.sh` (`git pull` → rebuild → restart → `alembic upgrade
+head`). Status widać w zakładce **Actions** w GitHubie.
+
+Pierwszy push utworzy katalog i zbuduje obraz, ale kontener `app` i tak nie
+wstanie poprawnie, dopóki nie wgrasz `.env`/`secrets/` (krok 6 wyżej) —
+to jedyny ręczny krok, który zostaje po Twojej stronie.
 
 ### Rollback
 
 ```bash
 # na serwerze
-cd /opt/auto-calls
+cd ~/auto-calls
 git checkout <poprzedni-dobry-sha>
 docker compose -f docker-compose.prod.yml up -d --build
 ```

@@ -28,5 +28,8 @@ jobs:
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           script: |
             set -e
-            cd /opt/auto-calls
+            if [ ! -d "$HOME/auto-calls/.git" ]; then
+              git clone https://github.com/maciejmar/auto-calls.git "$HOME/auto-calls"
+            fi
+            cd "$HOME/auto-calls"
             bash scripts/deploy.sh
