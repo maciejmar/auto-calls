@@ -10,7 +10,6 @@ from app.schemas.vapi_events import VapiMessage
 from app.services import calendar_tool_service
 from app.services.calendar_service import CalendarServiceError
 
-
 class FakeCalendarService:
     def __init__(self, *, busy: bool = False, check_error=None, create_error=None):
         self.busy = busy
