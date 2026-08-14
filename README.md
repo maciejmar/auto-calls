@@ -336,42 +336,68 @@ zakończeniu rozmowy i zapisuje pełne dane do `enquiries`.
 
 ## Deployment (produkcja)
 
-Produkcyjny stos różni się od lokalnego `docker compose up`: dochodzi
-**Caddy** (reverse proxy, automatyczne certyfikaty Let's Encrypt) i deploy
-dzieje się automatycznie przez **GitHub Actions** przy pushu na `master`.
-Definicja: `docker-compose.prod.yml` (samodzielny plik, nie override dla
-`docker-compose.yml`) + `Caddyfile`. W przeciwieństwie do wersji lokalnej,
-`app`/`db` nie publikują żadnych portów na hosta — jedynym punktem wejścia
-z internetu jest Caddy na 80/443.
+Produkcyjny stos różni się od lokalnego `docker compose up`: TLS i reverse
+proxy robi **nginx już zainstalowany na serwerze** (nie Caddy — serwer ma
+własnego nginx obsługującego inne strony, więc nie dublujemy reverse proxy),
+a deploy dzieje się automatycznie przez **GitHub Actions** przy pushu na
+`master`. Definicja:
+`docker-compose.prod.yml` (samodzielny plik, nie override dla
+`docker-compose.yml`). W przeciwieństwie do wersji lokalnej, `app`/`db` nie
+publikują portów na `0.0.0.0` — `app` jest dostępny tylko na
+`127.0.0.1:8000` (czyli wyłącznie dla nginx na tym samym hoście), `db` wcale
+nie jest publikowany.
 
 ### Jednorazowy setup serwera (95.158.64.196)
 
 1. **DNS**: dodaj rekord `A` — `ai-call.webaby.io` → `95.158.64.196` u
    dostawcy DNS dla `webaby.io`. Jeśli używasz Cloudflare, na start zostaw
    wpis **DNS only** (szara chmurka) — upraszcza pierwsze wystawienie
-   certyfikatu przez Caddy; pomarańczowe proxy Cloudflare da się dołączyć
+   certyfikatu przez certbota; pomarańczowe proxy Cloudflare da się dołączyć
    później.
-2. **Docker na serwerze**: zainstaluj Docker Engine + plugin Compose
+2. **Vhost w nginx** (serwer już ma nginx dla innych stron, więc dokładamy
+   tylko nowy vhost, nie dotykamy istniejących):
+   ```nginx
+   # /etc/nginx/sites-available/ai-call.webaby.io
+   server {
+       listen 80;
+       server_name ai-call.webaby.io;
+
+       location / {
+           proxy_pass http://127.0.0.1:8000;
+           proxy_set_header Host $host;
+           proxy_set_header X-Real-IP $remote_addr;
+           proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+           proxy_set_header X-Forwarded-Proto $scheme;
+       }
+   }
+   ```
+   ```bash
+   sudo ln -s /etc/nginx/sites-available/ai-call.webaby.io /etc/nginx/sites-enabled/
+   sudo nginx -t && sudo systemctl reload nginx
+   sudo certbot --nginx -d ai-call.webaby.io   # wystawia i podpina TLS; doinstaluj certbot + python3-certbot-nginx, jeśli jeszcze nie ma
+   ```
+3. **Docker na serwerze**: zainstaluj Docker Engine + plugin Compose
    (`docker compose version` powinno działać), i dodaj usera `webaby` do
    grupy `docker` (`sudo usermod -aG docker webaby`, potem relogin), żeby
    `docker compose` działało bez `sudo` — workflow łączy się zwykłym userem,
    bez podnoszonych uprawnień.
-3. **Klucz SSH dla GitHub Actions** — wygenerowany lokalnie
+4. **Klucz SSH dla GitHub Actions** — wygenerowany lokalnie
    (`ssh-keygen -t ed25519`). Dodaj **klucz publiczny** do
    `~/.ssh/authorized_keys` usera `webaby` na serwerze `95.158.64.196`.
-4. **SSH i firewall**: serwer nasłuchuje SSH na **porcie 2222** (nie 22 —
-   workflow ma to już zaszyte w `.github/workflows/deploy.yml`). Otwórz w
-   firewallu tylko 80, 443 i 2222; upewnij się, że 8000 i 5432 nie są
-   dostępne z zewnątrz (w `docker-compose.prod.yml` i tak nie są
-   publikowane, firewall to dodatkowa warstwa).
-5. **Sekrety w GitHub** (Settings → Secrets and variables → Actions →
+5. **SSH i firewall**: serwer nasłuchuje SSH na **porcie 2222** (nie 22 —
+   workflow ma to już zaszyte w `.github/workflows/deploy.yml`). 80/443 są
+   już otwarte (nginx obsługuje inne strony); upewnij się, że 8000 i 5432
+   nie są dostępne z zewnątrz (w `docker-compose.prod.yml` `app` jest
+   związany z `127.0.0.1`, `db` wcale nie publikowany — firewall to
+   dodatkowa warstwa, nie jedyna).
+6. **Sekrety w GitHub** (Settings → Secrets and variables → Actions →
    *New repository secret*) w repo `maciejmar/auto-calls`:
    - `SSH_HOST` = `95.158.64.196`
    - `SSH_USER` = `webaby`
-   - `SSH_PRIVATE_KEY` = zawartość **prywatnego** klucza z kroku 3 (plik bez
+   - `SSH_PRIVATE_KEY` = zawartość **prywatnego** klucza z kroku 4 (plik bez
      rozszerzenia `.pub`) — nigdy nie wklejaj go nigdzie indziej.
    - Port (2222) nie jest sekretem, jest już wpisany wprost w workflow.
-6. **Repo i sekrety na serwerze** — `git clone`/`git pull` robi już za Ciebie
+7. **Repo i sekrety na serwerze** — `git clone`/`git pull` robi już za Ciebie
    workflow (patrz niżej), więc katalog `~/auto-calls` powstanie sam przy
    pierwszym pushu. Ale `.env` i `secrets/google-service-account.json`
    zawierają Twoje prywatne klucze, których nigdy nie ma w repo — te dwie
@@ -402,7 +428,7 @@ nie istnieje na serwerze, klonuje repo, w przeciwnym razie leci prosto do
 head`). Status widać w zakładce **Actions** w GitHubie.
 
 Pierwszy push utworzy katalog i zbuduje obraz, ale kontener `app` i tak nie
-wstanie poprawnie, dopóki nie wgrasz `.env`/`secrets/` (krok 6 wyżej) —
+wstanie poprawnie, dopóki nie wgrasz `.env`/`secrets/` (krok 7 wyżej) —
 to jedyny ręczny krok, który zostaje po Twojej stronie.
 
 ### Rollback
