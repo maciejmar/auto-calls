@@ -26,6 +26,17 @@ class ExtractionError(Exception):
     pass
 
 
+def _strict_json_schema() -> dict:
+    # OpenAI's strict Structured Outputs mode requires every key in
+    # `properties` to also appear in `required` (optionality is expressed
+    # via a nullable type, not by omission) — Pydantic only lists fields
+    # without a default there, so every field here (all have defaults) gets
+    # dropped. Force it back to match what OpenAI expects.
+    schema = ExtractedEnquiry.model_json_schema()
+    schema["required"] = list(schema["properties"].keys())
+    return schema
+
+
 @retry(
     reraise=True,
     stop=stop_after_attempt(3),
@@ -43,7 +54,7 @@ async def _request_completion(client: AsyncOpenAI, model: str, transcript: str) 
             "type": "json_schema",
             "json_schema": {
                 "name": "ExtractedEnquiry",
-                "schema": ExtractedEnquiry.model_json_schema(),
+                "schema": _strict_json_schema(),
                 "strict": True,
             },
         },
