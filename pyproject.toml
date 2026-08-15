@@ -16,6 +16,7 @@ dependencies = [
     "structlog>=24.4",
     "openai>=1.55,<3",
     "google-auth>=2.35",
+    "requests>=2.32",
     "tzdata>=2024.2",
 ]
 

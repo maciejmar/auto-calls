@@ -259,16 +259,32 @@ async def _list_available_slots(service: CalendarService | None, tenant: Tenant)
 
 async def handle_tool_calls(db: AsyncSession, settings: Settings, message: VapiMessage) -> dict:
     tenant = await tenant_service.resolve_tenant(db, message.call.assistantId, message.call.phoneNumberId)
-    service = (
-        get_calendar_service(tenant, settings.google_service_account_file)
-        if tenant is not None and tenant.calendar_provider == "google" and tenant.calendar_id
-        else None
-    )
+
+    service: CalendarService | None = None
+    service_init_failed = False
+    if tenant is not None and tenant.calendar_provider == "google" and tenant.calendar_id:
+        try:
+            service = get_calendar_service(tenant, settings.google_service_account_file)
+        except Exception:
+            # Vapi requires a 200 with a spoken result no matter what — a
+            # construction-time failure (bad/missing key file, broken
+            # google-auth install, ...) must degrade to a message, never
+            # bubble up and 500 the whole webhook. Tracked separately from
+            # "not configured" (service left None) so we don't tell the
+            # caller the calendar isn't set up when it actually is.
+            logger.exception("calendar_tool.service_init_failed", tenant_id=str(tenant.id))
+            service_init_failed = True
 
     results = []
     for tool_call in message.toolCallList or []:
         if tenant is None:
             result_text = UNKNOWN_TENANT_MESSAGE
+        elif service_init_failed and tool_call.tool_name in (
+            "check_availability",
+            "create_appointment",
+            "list_available_slots",
+        ):
+            result_text = GENERIC_ERROR_MESSAGE
         elif tool_call.tool_name == "check_availability":
             result_text = await _check_availability(service, tenant, tool_call.tool_arguments)
         elif tool_call.tool_name == "create_appointment":
