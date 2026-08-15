@@ -19,6 +19,11 @@ class CalendarService(ABC):
     async def check_availability(self, calendar_id: str, start: str, end: str) -> bool: ...
 
     @abstractmethod
+    async def list_busy_intervals(
+        self, calendar_id: str, start: str, end: str
+    ) -> list[tuple[str, str]]: ...
+
+    @abstractmethod
     async def create_appointment(
         self, calendar_id: str, start: str, end: str, summary: str, description: str = ""
     ) -> str: ...
@@ -32,6 +37,11 @@ class NullCalendarService(CalendarService):
 
     async def check_availability(self, calendar_id: str, start: str, end: str) -> bool:
         return False
+
+    async def list_busy_intervals(
+        self, calendar_id: str, start: str, end: str
+    ) -> list[tuple[str, str]]:
+        return []
 
     async def create_appointment(
         self, calendar_id: str, start: str, end: str, summary: str, description: str = ""
@@ -70,7 +80,7 @@ class GoogleCalendarService(CalendarService):
             timeout=REQUEST_TIMEOUT,
         )
 
-    async def check_availability(self, calendar_id: str, start: str, end: str) -> bool:
+    async def _fetch_busy(self, calendar_id: str, start: str, end: str) -> list[dict]:
         try:
             async with await self._client() as client:
                 response = await client.post(
@@ -81,8 +91,17 @@ class GoogleCalendarService(CalendarService):
         except httpx.HTTPError as exc:
             raise CalendarServiceError(f"Google freeBusy request failed: {exc}") from exc
 
-        busy = response.json().get("calendars", {}).get(calendar_id, {}).get("busy", [])
+        return response.json().get("calendars", {}).get(calendar_id, {}).get("busy", [])
+
+    async def check_availability(self, calendar_id: str, start: str, end: str) -> bool:
+        busy = await self._fetch_busy(calendar_id, start, end)
         return len(busy) == 0
+
+    async def list_busy_intervals(
+        self, calendar_id: str, start: str, end: str
+    ) -> list[tuple[str, str]]:
+        busy = await self._fetch_busy(calendar_id, start, end)
+        return [(interval["start"], interval["end"]) for interval in busy]
 
     async def create_appointment(
         self, calendar_id: str, start: str, end: str, summary: str, description: str = ""

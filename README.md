@@ -224,11 +224,32 @@ curl -X POST https://api.vapi.ai/tool \
   }'
 ```
 
-Każdy `curl` zwraca `{"id": "..."}`. Oba ID wpisz w `model.toolIds` przy
-tworzeniu/aktualizacji asystenta (patrz sekcja "Prompt Asystenta" niżej) —
-`server.url` na narzędziu wskazujemy jawnie na `/webhooks/vapi`, żeby nie
-zależeć od tego, czy Server URL na poziomie Assistant jest już ustawiony w
-momencie tworzenia narzędzia.
+```bash
+curl -X POST https://api.vapi.ai/tool \
+  -H "Authorization: Bearer $VAPI_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "type": "function",
+    "async": false,
+    "function": {
+      "name": "list_available_slots",
+      "description": "Zwraca listę wolnych terminów spotkania w kancelarii w najbliższych dniach. Użyj, gdy klient nie ma konkretnej daty/godziny w głowie, albo gdy podany przez niego termin jest zajęty.",
+      "parameters": { "type": "object", "properties": {} }
+    },
+    "server": { "url": "https://<twoja-domena>/webhooks/vapi" }
+  }'
+```
+
+Trzecie narzędzie nie przyjmuje żadnych parametrów — backend sam liczy zakres
+(od teraz przez kolejne 7 dni, automatycznie poszerzane do 14, jeśli w
+pierwszym tygodniu nic nie jest wolne) i zwraca gotowy do wypowiedzenia
+string z maksymalnie 5 propozycjami (`app/services/calendar_tool_service.py::_list_available_slots`).
+
+Każdy `curl` zwraca `{"id": "..."}`. Wszystkie trzy ID wpisz w `model.toolIds`
+przy tworzeniu/aktualizacji asystenta (patrz sekcja "Prompt Asystenta"
+niżej) — `server.url` na narzędziu wskazujemy jawnie na `/webhooks/vapi`,
+żeby nie zależeć od tego, czy Server URL na poziomie Assistant jest już
+ustawiony w momencie tworzenia narzędzia.
 
 ### 5. Logika bezpieczeństwa rezerwacji
 
@@ -278,17 +299,23 @@ Przebieg rozmowy:
    wynika to z rozmowy, nie prowadź przesłuchania.
 8. Zapytaj, czy klient chciałby umówić się na spotkanie z pracownikiem
    kancelarii w celu omówienia sprawy.
-   - Jeśli tak: zapytaj o preferowaną datę i godzinę.
-   - Wywołaj narzędzie check_availability z datą i godziną zawsze w formacie
-     YYYY-MM-DD i HH:MM, niezależnie jak klient je wypowiedział.
-   - Jeśli termin jest wolny: wywołaj create_appointment z datą, godziną,
-     imieniem i nazwiskiem, telefonem i krótkim tematem sprawy, a następnie
-     przekaż klientowi wynik dokładnie tak, jak zwróciło narzędzie.
-   - Jeśli termin jest zajęty albo poza godzinami pracy kancelarii:
-     poinformuj o tym klienta treścią zwróconą przez narzędzie i zapytaj o
-     inny termin, powtarzając sprawdzenie.
-   - Nigdy nie zgaduj dostępności terminu — zawsze polegaj wyłącznie na
-     wyniku narzędzia.
+   - Jeśli klient ma konkretną datę i godzinę: wywołaj narzędzie
+     check_availability z datą i godziną zawsze w formacie YYYY-MM-DD i
+     HH:MM, niezależnie jak klient je wypowiedział.
+     - Jeśli termin jest wolny: wywołaj create_appointment z datą, godziną,
+       imieniem i nazwiskiem, telefonem i krótkim tematem sprawy, a
+       następnie przekaż klientowi wynik dokładnie tak, jak zwróciło
+       narzędzie.
+     - Jeśli termin jest zajęty albo poza godzinami pracy kancelarii:
+       poinformuj o tym klienta treścią zwróconą przez narzędzie i
+       zaproponuj sprawdzenie wolnych terminów (patrz niżej).
+   - Jeśli klient nie ma konkretnej daty/godziny, albo jego pierwszy wybór
+     okazał się zajęty: wywołaj narzędzie list_available_slots (bez
+     żadnych parametrów) i odczytaj klientowi zwrócone propozycje. Poczekaj
+     aż klient wybierze jedną z nich, dopiero wtedy wywołaj
+     create_appointment dla wybranego terminu.
+   - Nigdy nie zgaduj dostępności terminu ani nie wymyślaj godzin — zawsze
+     polegaj wyłącznie na wyniku narzędzia.
 9. Przed zakończeniem rozmowy krótko podsumuj i potwierdź kluczowe dane:
    imię i nazwisko, temat sprawy, umówiony termin (jeśli był), sposób
    kontaktu.

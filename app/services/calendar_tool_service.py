@@ -21,8 +21,17 @@ NO_CALENDAR_MESSAGE = (
     "Kancelaria nie ma jeszcze skonfigurowanego kalendarza online — zapiszę zgłoszenie, "
     "a pracownik skontaktuje się w sprawie terminu."
 )
+NO_SLOTS_MESSAGE = (
+    "Nie mam w tej chwili żadnych wolnych terminów w najbliższych dwóch tygodniach. "
+    "Zapiszę zgłoszenie, a pracownik skontaktuje się w sprawie terminu."
+)
 UNKNOWN_TOOL_MESSAGE = "To narzędzie nie jest jeszcze obsługiwane."
 UNKNOWN_TENANT_MESSAGE = "Przepraszam, wystąpił problem techniczny. Proszę spróbować później."
+
+MAX_SUGGESTED_SLOTS = 5
+MIN_LEAD_TIME = timedelta(minutes=60)
+SLOT_SEARCH_HORIZONS_DAYS = (7, 14)
+_WEEKDAY_PL = ["poniedziałek", "wtorek", "środa", "czwartek", "piątek", "sobota", "niedziela"]
 
 
 def _parse_slot(tenant: Tenant, date: str, time: str) -> tuple[datetime, datetime] | None:
@@ -51,6 +60,50 @@ def _business_hours_message(tenant: Tenant) -> str:
 
 def _format_pl(dt: datetime) -> str:
     return dt.strftime("%d.%m.%Y o %H:%M")
+
+
+def _format_pl_with_weekday(dt: datetime) -> str:
+    return f"{_WEEKDAY_PL[dt.weekday()]} {dt.strftime('%d.%m.%Y')} o {dt.strftime('%H:%M')}"
+
+
+def _free_slots_for_range(
+    tenant: Tenant,
+    busy_intervals: list[tuple[str, str]],
+    range_start: datetime,
+    range_end: datetime,
+) -> list[datetime]:
+    """Business-hours slots of tenant.appointment_duration_minutes, grid-aligned
+    to business_hours_start each day, that don't overlap any busy interval and
+    fall within [range_start, range_end). Weekends are skipped."""
+    tz = ZoneInfo(tenant.timezone)
+    busy = [
+        (datetime.fromisoformat(start).astimezone(tz), datetime.fromisoformat(end).astimezone(tz))
+        for start, end in busy_intervals
+    ]
+    duration = timedelta(minutes=tenant.appointment_duration_minutes)
+    business_start = datetime.strptime(tenant.business_hours_start, "%H:%M").time()
+    business_end = datetime.strptime(tenant.business_hours_end, "%H:%M").time()
+
+    slots: list[datetime] = []
+    day = range_start.date()
+    while day <= range_end.date():
+        if day.weekday() < 5:  # pon-pt
+            day_start = datetime.combine(day, business_start, tzinfo=tz)
+            day_end = datetime.combine(day, business_end, tzinfo=tz)
+
+            cursor = max(day_start, range_start)
+            grid_offset = (cursor - day_start) % duration
+            if grid_offset:
+                cursor += duration - grid_offset
+
+            while cursor + duration <= day_end and cursor <= range_end:
+                slot_end = cursor + duration
+                if not any(cursor < b_end and slot_end > b_start for b_start, b_end in busy):
+                    slots.append(cursor)
+                cursor += duration
+        day += timedelta(days=1)
+
+    return slots
 
 
 def _resolve_slot_or_message(tenant: Tenant, date: str, time: str) -> tuple[datetime, datetime] | str:
@@ -174,6 +227,36 @@ async def _create_appointment(
     return f"Termin został zarezerwowany na {_format_pl(start)}."
 
 
+async def _list_available_slots(service: CalendarService | None, tenant: Tenant) -> str:
+    if service is None:
+        return NO_CALENDAR_MESSAGE
+
+    tz = ZoneInfo(tenant.timezone)
+    now = datetime.now(tz)
+    slots: list[datetime] = []
+
+    for horizon_days in SLOT_SEARCH_HORIZONS_DAYS:
+        range_start = now + MIN_LEAD_TIME
+        range_end = now + timedelta(days=horizon_days)
+        try:
+            busy = await service.list_busy_intervals(
+                tenant.calendar_id, range_start.isoformat(), range_end.isoformat()
+            )
+        except CalendarServiceError:
+            logger.exception("calendar_tool.list_slots_failed", tenant_id=str(tenant.id))
+            return GENERIC_ERROR_MESSAGE
+
+        slots = _free_slots_for_range(tenant, busy, range_start, range_end)
+        if slots:
+            break
+
+    if not slots:
+        return NO_SLOTS_MESSAGE
+
+    proposals = ", ".join(_format_pl_with_weekday(slot) for slot in slots[:MAX_SUGGESTED_SLOTS])
+    return f"Mam wolne następujące terminy: {proposals}."
+
+
 async def handle_tool_calls(db: AsyncSession, settings: Settings, message: VapiMessage) -> dict:
     tenant = await tenant_service.resolve_tenant(db, message.call.assistantId, message.call.phoneNumberId)
     service = (
@@ -192,6 +275,8 @@ async def handle_tool_calls(db: AsyncSession, settings: Settings, message: VapiM
             result_text = await _create_appointment(
                 db, service, tenant, message.call.id, tool_call.tool_arguments
             )
+        elif tool_call.tool_name == "list_available_slots":
+            result_text = await _list_available_slots(service, tenant)
         else:
             result_text = UNKNOWN_TOOL_MESSAGE
 

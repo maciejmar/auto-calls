@@ -1,4 +1,6 @@
 import uuid
+from datetime import date, datetime, timedelta
+from zoneinfo import ZoneInfo
 
 import pytest
 from sqlalchemy import select
@@ -12,17 +14,29 @@ from app.services.calendar_service import CalendarServiceError
 
 
 class FakeCalendarService:
-    def __init__(self, *, busy: bool = False, check_error=None, create_error=None):
+    def __init__(
+        self, *, busy: bool = False, check_error=None, create_error=None, busy_factory=None
+    ):
         self.busy = busy
         self.check_error = check_error
         self.create_error = create_error
         self.created: list[tuple] = []
         self.cancelled: list[str] = []
+        self.list_calls: list[tuple] = []
+        # busy_factory(start, end, call_index) -> list[(start, end)]; call_index
+        # starts at 1, lets a test give different answers per horizon (7d/14d).
+        self.busy_factory = busy_factory or (lambda start, end, call_index: [])
 
     async def check_availability(self, calendar_id, start, end):
         if self.check_error:
             raise self.check_error
         return not self.busy
+
+    async def list_busy_intervals(self, calendar_id, start, end):
+        if self.check_error:
+            raise self.check_error
+        self.list_calls.append((start, end))
+        return self.busy_factory(start, end, len(self.list_calls))
 
     async def create_appointment(self, calendar_id, start, end, summary, description=""):
         if self.create_error:
@@ -229,3 +243,120 @@ def test_tool_call_supports_nested_function_shape():
         {"id": "t2", "name": "create_appointment", "arguments": {"date": "2026-08-14"}}
     )
     assert flat.tool_name == "create_appointment"
+
+
+def _tenant_obj(**overrides) -> Tenant:
+    defaults = dict(
+        id=uuid.uuid4(),
+        name="Kancelaria A",
+        vapi_assistant_id="assistant_a",
+        calendar_provider="google",
+        calendar_id="kancelaria-a@group.calendar.google.com",
+        timezone="Europe/Warsaw",
+        business_hours_start="09:00",
+        business_hours_end="17:00",
+        appointment_duration_minutes=30,
+    )
+    defaults.update(overrides)
+    return Tenant(**defaults)
+
+
+# 2026-08-14 is a Friday, 2026-08-15/16 a weekend, 2026-08-17 a Monday.
+_TZ = ZoneInfo("Europe/Warsaw")
+_RANGE_START = datetime(2026, 8, 14, 16, 10, tzinfo=_TZ)  # Friday, not grid-aligned
+_RANGE_END = datetime(2026, 8, 18, 11, 45, tzinfo=_TZ)  # Tuesday
+
+
+def test_free_slots_for_range_skips_weekend_and_snaps_to_grid():
+    tenant = _tenant_obj()
+
+    slots = calendar_tool_service._free_slots_for_range(tenant, [], _RANGE_START, _RANGE_END)
+
+    # Friday: only 16:10 onward is in range, but slots are grid-aligned to
+    # 09:00 in 30-minute steps, so the first candidate is 16:30, not 16:10.
+    assert datetime(2026, 8, 14, 16, 30, tzinfo=_TZ) in slots
+    assert datetime(2026, 8, 14, 16, 10, tzinfo=_TZ) not in slots
+    # No weekend slots.
+    assert all(slot.date() not in (date(2026, 8, 15), date(2026, 8, 16)) for slot in slots)
+    # Friday (1 slot) + Monday (16 slots, full 09:00-17:00) + Tuesday up to
+    # 11:45 (6 slots: 09:00..11:30) = 23.
+    assert len(slots) == 23
+
+
+def test_free_slots_for_range_excludes_busy_interval():
+    tenant = _tenant_obj()
+    monday_fully_busy = [("2026-08-17T09:00:00+02:00", "2026-08-17T17:00:00+02:00")]
+
+    slots = calendar_tool_service._free_slots_for_range(
+        tenant, monday_fully_busy, _RANGE_START, _RANGE_END
+    )
+
+    assert all(slot.date() != date(2026, 8, 17) for slot in slots)
+    assert datetime(2026, 8, 14, 16, 30, tzinfo=_TZ) in slots  # Friday untouched
+    assert len(slots) == 23 - 16  # the 16 Monday slots are gone
+
+
+async def test_list_available_slots_no_calendar_configured(db_session):
+    tenant = await _make_tenant(db_session)
+    tenant.calendar_provider = "none"
+
+    result = await calendar_tool_service._list_available_slots(None, tenant)
+
+    assert result == calendar_tool_service.NO_CALENDAR_MESSAGE
+
+
+async def test_list_available_slots_google_error_returns_generic_message(db_session):
+    tenant = await _make_tenant(db_session)
+    fake = FakeCalendarService(check_error=CalendarServiceError("boom"))
+
+    result = await calendar_tool_service._list_available_slots(fake, tenant)
+
+    assert result == calendar_tool_service.GENERIC_ERROR_MESSAGE
+
+
+async def test_list_available_slots_returns_proposals(db_session):
+    tenant = await _make_tenant(db_session)
+    fake = FakeCalendarService()  # busy_factory defaults to "nothing busy"
+
+    result = await calendar_tool_service._list_available_slots(fake, tenant)
+
+    assert result.startswith("Mam wolne następujące terminy:")
+    assert any(day in result for day in calendar_tool_service._WEEKDAY_PL)
+    assert len(fake.list_calls) == 1  # first (7-day) horizon already had slots
+
+
+async def test_list_available_slots_widens_to_two_weeks_when_first_week_full(db_session):
+    tenant = await _make_tenant(db_session)
+
+    def busy_factory(start, end, call_index):
+        # First call (7-day horizon): mark the whole queried range busy.
+        # Second call (14-day horizon): leave it free.
+        return [(start, end)] if call_index == 1 else []
+
+    fake = FakeCalendarService(busy_factory=busy_factory)
+
+    result = await calendar_tool_service._list_available_slots(fake, tenant)
+
+    assert result.startswith("Mam wolne następujące terminy:")
+    assert len(fake.list_calls) == 2
+
+
+async def test_list_available_slots_no_availability_even_after_widening(db_session):
+    tenant = await _make_tenant(db_session)
+    fake = FakeCalendarService(busy_factory=lambda start, end, call_index: [(start, end)])
+
+    result = await calendar_tool_service._list_available_slots(fake, tenant)
+
+    assert result == calendar_tool_service.NO_SLOTS_MESSAGE
+    assert len(fake.list_calls) == 2
+
+
+async def test_webhook_list_available_slots_end_to_end(db_session, monkeypatch):
+    await _make_tenant(db_session)
+    _install_fake_service(monkeypatch, FakeCalendarService())
+
+    message = _tool_call_message("list_available_slots", {})
+    result = await calendar_tool_service.handle_tool_calls(db_session, get_settings(), message)
+
+    assert result["results"][0]["toolCallId"] == "toolu_1"
+    assert "Mam wolne następujące terminy" in result["results"][0]["result"]
